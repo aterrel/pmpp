@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
-
+#include <math.h>
 
 // CUDA error checking macro
 #define checkCudaErrors(call) \
@@ -74,10 +74,16 @@ __global__ void MatrixMulKernel_tiled(float *M, float *N, float *P, int Width) {
 
     // Loop over the M and N tiles required to compute the P element
     float Pvalue =  0;
-    for (int ph = 0; ph < Width/TILE_WIDTH; ++ph) {
+    for (int ph = 0; ph < (int)ceilf(((float)Width/TILE_WIDTH)); ++ph) {
         // Collaborative loading of M and N tiles into shared memory
-        Mds[ty][tx] = M[Row*Width + ph*TILE_WIDTH + tx];
-        Nds[ty][tx] = N[(ph*TILE_WIDTH + ty)*Width + Col];
+        if ((Row < Width) && (ph*TILE_WIDTH + tx) < Width) 
+            Mds[ty][tx] = M[Row*Width + ph*TILE_WIDTH + tx];
+        else
+            Mds[ty][tx] = 0.0f;
+        if ((Col < Width) && (ph*TILE_WIDTH + ty) < Width)
+            Nds[ty][tx] = N[(ph*TILE_WIDTH + ty)*Width + Col];
+        else
+            Nds[ty][tx] = 0.0f;
         __syncthreads();
 
         // Matrix multiplication on the small tiles
@@ -86,7 +92,8 @@ __global__ void MatrixMulKernel_tiled(float *M, float *N, float *P, int Width) {
         }
         __syncthreads();
     }
-    P[Row*Width + Col] = Pvalue;
+    if ((Row < Width) && (Col < Width))
+        P[Row*Width + Col] = Pvalue;
 }
 
 
