@@ -60,6 +60,36 @@ __global__ void MatrixMulKernel_colorder(float* M, float* N,
     }
 }
 
+#define TILE_WIDTH 16
+__global__ void MatrixMulKernel_tiled(float *M, float *N, float *P, int Width) {
+    __shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float Nds[TILE_WIDTH][TILE_WIDTH];
+
+    int bx = blockIdx.x; int by = blockIdx.y;
+    int tx = threadIdx.x; int ty = threadIdx.y;
+
+    // Identify the row and column of the P element to work on
+    int Row = by * TILE_WIDTH + ty;
+    int Col = bx * TILE_WIDTH + tx;
+
+    // Loop over the M and N tiles required to compute the P element
+    float Pvalue =  0;
+    for (int ph = 0; ph < Width/TILE_WIDTH; ++ph) {
+        // Collaborative loading of M and N tiles into shared memory
+        Mds[ty][tx] = M[Row*Width + ph*TILE_WIDTH + tx];
+        Nds[ty][tx] = N[(ph*TILE_WIDTH + ty)*Width + Col];
+        __syncthreads();
+
+        // Matrix multiplication on the small tiles
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            Pvalue += Mds[ty][k] * Nds[k][tx];
+        }
+        __syncthreads();
+    }
+    P[Row*Width + Col] = Pvalue;
+}
+
+
 void MatrixMulCPU(float* M, float* N, float* P, int Width) {
     for (int row = 0; row < Width; ++row) {
         for (int col = 0; col < Width; ++col) {
@@ -101,6 +131,11 @@ void callCudaMatmul(float* h_M, float* h_N, float* h_P, int Width, char* order) 
         dim3 grid((Width + block.x - 1) / block.x, 1);
 
         MatrixMulKernel_roworder<<<grid, block>>>(d_M, d_N, d_P, Width);
+    } else if (strcmp(order, "tiled") == 0) {
+        dim3 block(TILE_WIDTH, TILE_WIDTH);
+        dim3 grid((Width + block.x - 1) / block.x, (Width + block.y - 1) / block.y);
+
+        MatrixMulKernel_tiled<<<grid, block>>>(d_M, d_N, d_P, Width);
     } else if (strcmp(order, "col") == 0) {
         dim3 block(1, 1024);
         dim3 grid(1, (Width + block.y - 1) / block.y);
@@ -157,6 +192,12 @@ int main(int argc, char** argv)
         printf("Results are NOT close!\n");
     }
     callCudaMatmul(h_M, h_N, h_P, Width, "col");
+    if (allclose(h_P, h_P_ref, Width)) {
+        printf("Results are close!\n");
+    } else {
+        printf("Results are NOT close!\n");
+    }
+    callCudaMatmul(h_M, h_N, h_P, Width, "tiled");
     if (allclose(h_P, h_P_ref, Width)) {
         printf("Results are close!\n");
     } else {
